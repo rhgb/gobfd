@@ -9,6 +9,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -19,6 +20,7 @@ func main() {
 	logger := loggerInstance.Sugar()
 
 	agentConfig := udp.AgentConfig{}
+	helpFlag := flag.Bool("h", false, "print help")
 	flag.BoolVar(&agentConfig.IPv4Only, "4", false, "use IPv4 only")
 	flag.BoolVar(&agentConfig.IPv6Only, "6", false, "use IPv6 only")
 	flag.StringVar(&agentConfig.ListenAddress, "l", ":3784", "BFD agent listen address")
@@ -35,6 +37,12 @@ func main() {
 
 	httpManageListenAddrFlag := flag.String("manage-listen", ":8080", "http listen address for manage endpoints")
 	flag.Parse()
+
+	if *helpFlag {
+		println("Usage: agent [-options]")
+		flag.PrintDefaults()
+		os.Exit(0)
+	}
 
 	if agentConfig.IPv4Only && agentConfig.IPv6Only {
 		logger.Fatalf("option -4 and -6 cannot appear at same time")

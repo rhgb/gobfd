@@ -68,29 +68,7 @@ func main() {
 	}
 	agentConfig.DetectMult = uint8(*detectMultFlag)
 
-	peers := make([]string, 0)
-	if len(*remoteAddrsFlag) > 0 {
-		peers = append(peers, strings.Split(*remoteAddrsFlag, ",")...)
-	}
-	if *targetPortFlag <= 0 || *targetPortFlag > 65535 {
-		logger.Fatalf("illegal -lookup-port value %v", *targetPortFlag)
-	}
-	if len(*dnsNameFlag) > 0 {
-		ips, err := net.LookupIP(*dnsNameFlag)
-		if err != nil {
-			logger.Fatalf("error lookup dns name %v, error: %v", *dnsNameFlag, err)
-		}
-		logger.Debugf("resolved addresses for name %v: %v", *dnsNameFlag, ips)
-		for _, ip := range ips {
-			if agentConfig.IPv4Only && ip.To4() == nil {
-				continue
-			}
-			if agentConfig.IPv6Only && ip.To4() != nil {
-				continue
-			}
-			peers = append(peers, fmt.Sprintf("%v:%v", ip.String(), *targetPortFlag))
-		}
-	}
+	peers := constructPeerList(remoteAddrsFlag, targetPortFlag, logger, dnsNameFlag, agentConfig)
 	logger.Infof("peers to connect: %v", peers)
 	agentConfig.PeerAddresses = peers
 
@@ -105,6 +83,45 @@ func main() {
 	for {
 		time.Sleep(time.Second)
 	}
+}
+
+func constructPeerList(remoteAddrsFlag *string, targetPortFlag *int, logger *zap.SugaredLogger, dnsNameFlag *string, agentConfig udp.AgentConfig) []string {
+	peers := make([]string, 0)
+	if len(*remoteAddrsFlag) > 0 {
+		peers = append(peers, strings.Split(*remoteAddrsFlag, ",")...)
+	}
+	if *targetPortFlag <= 0 || *targetPortFlag > 65535 {
+		logger.Fatalf("illegal -lookup-port value %v", *targetPortFlag)
+	}
+	if len(*dnsNameFlag) > 0 {
+		localAddrs, err := net.InterfaceAddrs()
+		if err != nil {
+			logger.Errorf("cannot get local addresses, error: %v", err)
+		}
+		ips, err := net.LookupIP(*dnsNameFlag)
+		if err != nil {
+			logger.Fatalf("error lookup dns name %v, error: %v", *dnsNameFlag, err)
+		}
+		logger.Debugf("resolved addresses for name %v: %v", *dnsNameFlag, ips)
+	outer:
+		for _, ip := range ips {
+			if agentConfig.IPv4Only && ip.To4() == nil {
+				continue
+			}
+			if agentConfig.IPv6Only && ip.To4() != nil {
+				continue
+			}
+			for _, addr := range localAddrs {
+				ipNet, ok := addr.(*net.IPNet)
+				if ok && ipNet.Contains(ip) {
+					logger.Debugf("target %v belongs to local addr %v, skipping", ip.String(), addr.String())
+					continue outer
+				}
+			}
+			peers = append(peers, fmt.Sprintf("%v:%v", ip.String(), *targetPortFlag))
+		}
+	}
+	return peers
 }
 
 func startAgentManager(listenAddr string, agent *udp.Agent, logger *zap.SugaredLogger) error {

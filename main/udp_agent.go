@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/rhgb/gobfd/bfd"
 	"github.com/rhgb/gobfd/udp"
 	"go.uber.org/zap"
 	"math"
@@ -68,7 +69,12 @@ func main() {
 	}
 	agentConfig.DetectMult = uint8(*detectMultFlag)
 
-	peers := constructPeerList(remoteAddrsFlag, targetPortFlag, logger, dnsNameFlag, agentConfig)
+	staticPeers := make([]string, 0)
+	if len(*remoteAddrsFlag) > 0 {
+		staticPeers = bfd.UniqueStringsSorted(strings.Split(*remoteAddrsFlag, ","))
+	}
+	dnsPeers := resolveDnsPeers(agentConfig, *dnsNameFlag, *targetPortFlag, logger)
+	peers := append(dnsPeers, staticPeers...)
 	logger.Infof("peers to connect: %v", peers)
 	agentConfig.PeerAddresses = peers
 
@@ -80,29 +86,28 @@ func main() {
 	if err != nil {
 		logger.Fatalf("error start manage endpoint, error: %v", err)
 	}
+	go watchDnsName(agent, staticPeers, agentConfig, *dnsNameFlag, *targetPortFlag, logger)
 	for {
 		time.Sleep(time.Second)
 	}
 }
 
-func constructPeerList(remoteAddrsFlag *string, targetPortFlag *int, logger *zap.SugaredLogger, dnsNameFlag *string, agentConfig udp.AgentConfig) []string {
+func resolveDnsPeers(agentConfig udp.AgentConfig, dnsName string, targetPort int, logger *zap.SugaredLogger) []string {
 	peers := make([]string, 0)
-	if len(*remoteAddrsFlag) > 0 {
-		peers = append(peers, strings.Split(*remoteAddrsFlag, ",")...)
-	}
-	if *targetPortFlag <= 0 || *targetPortFlag > 65535 {
-		logger.Fatalf("illegal -lookup-port value %v", *targetPortFlag)
-	}
-	if len(*dnsNameFlag) > 0 {
+	if len(dnsName) > 0 {
+		if targetPort <= 0 || targetPort > 65535 {
+			logger.Fatalf("illegal -lookup-port value %v", targetPort)
+		}
 		localAddrs, err := net.InterfaceAddrs()
 		if err != nil {
 			logger.Errorf("cannot get local addresses, error: %v", err)
 		}
-		ips, err := net.LookupIP(*dnsNameFlag)
+		ips, err := net.LookupIP(dnsName)
 		if err != nil {
-			logger.Fatalf("error lookup dns name %v, error: %v", *dnsNameFlag, err)
+			logger.Fatalf("error lookup dns name %v, error: %v", dnsName, err)
 		}
-		logger.Debugf("resolved addresses for name %v: %v", *dnsNameFlag, ips)
+		logger.Infof("resolved addresses for name %v: %v", dnsName, ips)
+		peers = make([]string, 0, len(ips))
 	outer:
 		for _, ip := range ips {
 			if agentConfig.IPv4Only && ip.To4() == nil {
@@ -118,7 +123,7 @@ func constructPeerList(remoteAddrsFlag *string, targetPortFlag *int, logger *zap
 					continue outer
 				}
 			}
-			peers = append(peers, fmt.Sprintf("%v:%v", ip.String(), *targetPortFlag))
+			peers = append(peers, fmt.Sprintf("%v:%v", ip.String(), targetPort))
 		}
 	}
 	return peers
@@ -143,4 +148,11 @@ func startAgentManager(listenAddr string, agent *udp.Agent, logger *zap.SugaredL
 	})
 	logger.Infof("starting manage endpoint at %v...", listenAddr)
 	return http.ListenAndServe(listenAddr, nil)
+}
+
+func watchDnsName(agent *udp.Agent, staticPeers []string, agentConfig udp.AgentConfig, dnsNameFlag string, targetPortFlag int, logger *zap.SugaredLogger) {
+	for range time.Tick(10 * time.Second) {
+		dnsPeers := resolveDnsPeers(agentConfig, dnsNameFlag, targetPortFlag, logger)
+		agent.UpdatePeerAddresses(append(dnsPeers, staticPeers...))
+	}
 }

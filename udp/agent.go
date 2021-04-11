@@ -28,19 +28,20 @@ type SessionConfig struct {
 }
 
 type Agent struct {
-	network          string
-	listenAddr       *net.UDPAddr
-	listenConn       *net.UDPConn
-	peerAddresses    []string
-	sessionByAddr    map[string]*bfd.Session
-	sessionByDiscr   map[uint32]*bfd.Session
-	dialByAddr       map[string]*net.UDPConn
-	discrBase        uint32
-	nextSessionIndex uint16
-	sessionConfig    SessionConfig
-	rxCpChan         chan receivedControlPacket
-	activeConnChan   chan *net.UDPAddr
-	logger           *zap.SugaredLogger
+	network            string
+	listenAddr         *net.UDPAddr
+	listenConn         *net.UDPConn
+	peerAddresses      []string
+	sessionByAddr      map[string]*bfd.Session
+	sessionByDiscr     map[uint32]*bfd.Session
+	dialByAddr         map[string]*net.UDPConn
+	discrBase          uint32
+	nextSessionIndex   uint16
+	sessionConfig      SessionConfig
+	rxCpChan           chan receivedControlPacket
+	activeConnChan     chan *net.UDPAddr
+	deactivateConnChan chan *net.UDPAddr
+	logger             *zap.SugaredLogger
 }
 
 type receivedControlPacket struct {
@@ -100,7 +101,9 @@ func NewAgent(conf AgentConfig, logger *zap.SugaredLogger) (agent *Agent, err er
 		return nil, err
 	}
 	go agent.sessionControlLoop()
-	agent.activateConn()
+	for _, addr := range agent.peerAddresses {
+		go agent.activateConnToAddr(addr)
+	}
 	return agent, nil
 }
 
@@ -144,6 +147,17 @@ func (a *Agent) sessionControlLoop() {
 				a.newSession(addr)
 			} else {
 				a.logger.Infof("session already created for addr %v, ignoring", addrStr)
+			}
+		case addr := <-a.deactivateConnChan:
+			addrStr := addr.IP.String()
+			session := a.sessionByAddr[addrStr]
+			if session != nil {
+				a.logger.Infof("deleting session %v for addr %v", session.LocalDiscr(), addrStr)
+				delete(a.sessionByDiscr, session.LocalDiscr())
+				delete(a.sessionByAddr, addrStr)
+				session.Close()
+			} else {
+				a.logger.Warnf("session destroy engaged but no session found for %v", addrStr)
 			}
 		}
 	}
@@ -234,18 +248,58 @@ func (a *Agent) doForwardPacket(session *bfd.Session, remoteAddr *net.UDPAddr) {
 	}
 }
 
-func (a *Agent) activateConn() {
-	for _, addr := range a.peerAddresses {
-		address := addr
-		go func() {
-			resolved, err := net.ResolveUDPAddr(a.network, address)
-			if err != nil {
-				a.logger.Errorf("error resolving peer address: %v, error: %v", address, err)
-				return
-			}
-			a.logger.Infof("address %v resolved to %v", address, resolved.String())
-			a.activeConnChan <- resolved
-		}()
+func (a *Agent) activateConnToAddr(address string) {
+	resolved, err := net.ResolveUDPAddr(a.network, address)
+	if err != nil {
+		a.logger.Errorf("error resolving peer address: %v, error: %v", address, err)
+		return
+	}
+	a.logger.Infof("address %v resolved to %v", address, resolved.String())
+	a.activeConnChan <- resolved
+}
+
+func (a *Agent) deactivateConnToAddr(address string) {
+	resolved, err := net.ResolveUDPAddr(a.network, address)
+	if err != nil {
+		a.logger.Errorf("error resolving peer address: %v, error: %v", address, err)
+		return
+	}
+	a.logger.Infof("address %v resolved to %v", address, resolved.String())
+	a.deactivateConnChan <- resolved
+}
+
+// Caution: this method cannot be invoked concurrently.
+func (a *Agent) UpdatePeerAddresses(addresses []string) {
+	existing := bfd.UniqueStringsSorted(a.peerAddresses)
+	incoming := bfd.UniqueStringsSorted(addresses)
+	a.peerAddresses = incoming
+	toAdd := make([]string, 0, len(addresses))
+	toDel := make([]string, 0, len(a.peerAddresses))
+	i := 0
+	j := 0
+	for i < len(existing) || j < len(incoming) {
+		if j >= len(incoming) || existing[i] < incoming[j] {
+			toDel = append(toDel, existing[i])
+			i++
+		} else if i >= len(existing) || existing[i] > incoming[j] {
+			toAdd = append(toAdd, incoming[j])
+			j++
+		} else {
+			i++
+			j++
+		}
+	}
+	if len(toAdd) > 0 {
+		a.logger.Infof("adding new peers %v", toAdd)
+		for _, addr := range toAdd {
+			go a.activateConnToAddr(addr)
+		}
+	}
+	if len(toDel) > 0 {
+		a.logger.Infof("removing peers %v", toDel)
+		for _, addr := range toDel {
+			go a.deactivateConnToAddr(addr)
+		}
 	}
 }
 

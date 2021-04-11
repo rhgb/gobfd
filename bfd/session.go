@@ -7,16 +7,6 @@ import (
 	"time"
 )
 
-func greaterUInt32(n ...uint32) uint32 {
-	max := uint32(0)
-	for _, u := range n {
-		if u > max {
-			max = u
-		}
-	}
-	return max
-}
-
 type SessionRole uint8
 
 const (
@@ -89,7 +79,7 @@ func NewSession(conf SessionConfig, logger *zap.SugaredLogger) *Session {
 		localDiscr:                     conf.LocalDiscr,
 		remoteDiscr:                    0,
 		localDiag:                      DiagNone,
-		desiredMinTxInterval:           greaterUInt32(conf.DesiredMinTxInterval, 1_000_000),
+		desiredMinTxInterval:           GreaterUInt32(conf.DesiredMinTxInterval, 1_000_000),
 		requiredMinRxInterval:          conf.RequiredMinRxInterval,
 		remoteMinRxInterval:            1,
 		demandMode:                     conf.DemandMode,
@@ -196,7 +186,7 @@ func (s *Session) receive(cp *ControlPacket) {
 			s.polling = true
 		}
 	} else if prevState == StateUp && s.state != StateUp {
-		s.desiredMinTxInterval = greaterUInt32(s.configuredDesiredMinTxInterval, 1_000_000)
+		s.desiredMinTxInterval = GreaterUInt32(s.configuredDesiredMinTxInterval, 1_000_000)
 	}
 	// send final
 	if cp.Poll {
@@ -208,7 +198,7 @@ func (s *Session) receive(cp *ControlPacket) {
 		s.detectionTimer.Stop()
 	}
 	// todo slower detect time when echo function enabled
-	detectTime := time.Duration(cp.DetectMult) * time.Duration(greaterUInt32(cp.DesiredMinTXInterval, s.effectiveRequiredMinRxInterval)) * time.Microsecond
+	detectTime := time.Duration(cp.DetectMult) * time.Duration(GreaterUInt32(cp.DesiredMinTXInterval, s.effectiveRequiredMinRxInterval)) * time.Microsecond
 	s.detectionTimer = time.AfterFunc(detectTime, func() { s.detectionTimeoutChan <- true })
 }
 
@@ -243,7 +233,7 @@ func (s *Session) rescheduleSend() {
 	if forbid {
 		s.txInterval = 0
 	} else {
-		s.txInterval = greaterUInt32(s.effectiveDesiredMinTxInterval, s.remoteMinRxInterval)
+		s.txInterval = GreaterUInt32(s.effectiveDesiredMinTxInterval, s.remoteMinRxInterval)
 	}
 	if txIntervalPrev > 0 && s.txInterval == 0 {
 		s.logger.Debugf("ceasing tx, prev interval is %v", txIntervalPrev)
@@ -331,7 +321,7 @@ func (s *Session) updateIntervalParams(params *SessionIntervalParams) {
 	}
 	calcDesiredMinTxInterval := params.desiredMinTxInterval
 	if s.state != StateUp {
-		calcDesiredMinTxInterval = greaterUInt32(params.desiredMinTxInterval, 1_000_000)
+		calcDesiredMinTxInterval = GreaterUInt32(params.desiredMinTxInterval, 1_000_000)
 	}
 	shouldPoll := s.requiredMinRxInterval != params.requiredMinRxInterval ||
 		s.desiredMinTxInterval != calcDesiredMinTxInterval
